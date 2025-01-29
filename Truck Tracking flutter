@@ -1,0 +1,151 @@
+import 'package:flutter/material.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:web_socket_channel/io.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+
+void main() {
+  runApp(TruckTrackingApp());
+}
+
+class TruckTrackingApp extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      title: 'Truck Tracking',
+      home: LoginScreen(),
+    );
+  }
+}
+
+class LoginScreen extends StatefulWidget {
+  @override
+  _LoginScreenState createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final TextEditingController emailController = TextEditingController();
+  final TextEditingController passwordController = TextEditingController();
+  String role = 'vendor';
+
+  Future<void> login() async {
+    final response = await http.post(
+      Uri.parse('http://your-backend-url/login'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'email': emailController.text,
+        'password': passwordController.text,
+        'role': role
+      }),
+    );
+    
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (context) => TrackingScreen(role: role)),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Login failed!')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Login')),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          children: [
+            TextField(controller: emailController, decoration: InputDecoration(labelText: 'Email')),
+            TextField(controller: passwordController, decoration: InputDecoration(labelText: 'Password'), obscureText: true),
+            DropdownButton<String>(
+              value: role,
+              items: [
+                DropdownMenuItem(value: 'vendor', child: Text('Vendor')),
+                DropdownMenuItem(value: 'worker', child: Text('Worker')),
+              ],
+              onChanged: (value) => setState(() => role = value!),
+            ),
+            ElevatedButton(onPressed: login, child: Text('Login')),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class TrackingScreen extends StatefulWidget {
+  final String role;
+  TrackingScreen({required this.role});
+
+  @override
+  _TrackingScreenState createState() => _TrackingScreenState();
+}
+
+class _TrackingScreenState extends State<TrackingScreen> {
+  late GoogleMapController mapController;
+  final Set<Marker> _markers = {};
+  final channel = IOWebSocketChannel.connect('ws://your-backend-url');
+  Map<int, String> truckStatus = {};
+
+  @override
+  void initState() {
+    super.initState();
+    channel.stream.listen((data) {
+      final location = jsonDecode(data);
+      setState(() {
+        _markers.add(
+          Marker(
+            markerId: MarkerId(location['truck_id'].toString()),
+            position: LatLng(location['latitude'], location['longitude']),
+            infoWindow: InfoWindow(
+              title: 'Truck ${location['truck_id']}',
+              snippet: truckStatus[location['truck_id']] ?? 'Status: Unknown',
+            ),
+          ),
+        );
+      });
+    });
+  }
+
+  Future<void> updateTruckStatus(int truckId, String status) async {
+    await http.post(
+      Uri.parse('http://your-backend-url/update_status'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'truck_id': truckId, 'status': status}),
+    );
+    setState(() {
+      truckStatus[truckId] = status;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Tracking Dashboard')),
+      body: Column(
+        children: [
+          Expanded(
+            child: GoogleMap(
+              initialCameraPosition: CameraPosition(target: LatLng(20.5937, 78.9629), zoom: 5),
+              markers: _markers,
+              onMapCreated: (controller) => mapController = controller,
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: ElevatedButton(
+              onPressed: () => updateTruckStatus(1, 'In Transit'),
+              child: Text('Update Truck 1 Status to In Transit'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
