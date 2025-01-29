@@ -1,0 +1,86 @@
+// Backend: Express.js + PostgreSQL + WebSockets
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const cors = require('cors');
+const bodyParser = require('body-parser');
+const jwt = require('jsonwebtoken');
+const { Pool } = require('pg');
+require('dotenv').config();
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: '*' } });
+
+app.use(cors());
+app.use(bodyParser.json());
+
+const pool = new Pool({
+  user: process.env.DB_USER,
+  host: process.env.DB_HOST,
+  database: process.env.DB_NAME,
+  password: process.env.DB_PASSWORD,
+  port: process.env.DB_PORT,
+});
+
+const SECRET_KEY = process.env.SECRET_KEY;
+
+// User authentication
+app.post('/login', async (req, res) => {
+  const { email, password, role } = req.body;
+  try {
+    const user = await pool.query('SELECT * FROM users WHERE email = $1 AND role = $2', [email, role]);
+    if (user.rows.length > 0) {
+      const token = jwt.sign({ id: user.rows[0].id, role: user.rows[0].role }, SECRET_KEY, { expiresIn: '1h' });
+      res.json({ token, user: user.rows[0] });
+    } else {
+      res.status(401).json({ message: 'Invalid credentials' });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get all trucks (for vendors)
+app.get('/trucks', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM trucks');
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get assigned trucks (for workers)
+app.get('/trucks/:userId', async (req, res) => {
+  const { userId } = req.params;
+  try {
+    const result = await pool.query('SELECT * FROM trucks WHERE assigned_to = $1', [userId]);
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Real-time truck location tracking
+io.on('connection', (socket) => {
+  console.log('A user connected');
+  
+  socket.on('updateLocation', async (data) => {
+    try {
+      const { truck_id, latitude, longitude } = data;
+      await pool.query('UPDATE trucks SET latitude = $1, longitude = $2 WHERE id = $3', [latitude, longitude, truck_id]);
+      io.emit('locationUpdated', { truck_id, latitude, longitude });
+    } catch (error) {
+      console.error(error);
+    }
+  });
+
+  socket.on('disconnect', () => {
+    console.log('User disconnected');
+  });
+});
+
+server.listen(5000, () => {
+  console.log('Server running on port 5000');
+});
